@@ -1,3 +1,4 @@
+
 # flask_mock_api/app.py
 from flask import Flask, jsonify, request
 import json, os
@@ -332,4 +333,4 @@ if __name__ == '__main__':
     # Initialize baselines and run locally (Render will use gunicorn)
     ensure_baselines()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.
+    app.run(host='0.0.0.0', port=port, debug=False)
