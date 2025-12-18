@@ -1,29 +1,37 @@
-
+# flask_mock_api/app.py
 from flask import Flask, jsonify, request
 import json, os
 
 app = Flask(__name__)
 
+# Paths for local JSON "database"
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 SHIPMENTS_FILE = os.path.join(DATA_DIR, 'shipments.json')
 CARRIERS_FILE = os.path.join(DATA_DIR, 'carriers.json')
 DISTANCES_FILE = os.path.join(DATA_DIR, 'distances.json')
 EMISSION_FILE = os.path.join(DATA_DIR, 'emission_factors.json')
 
+
+# ---------- Utility functions ----------
+
 def load_json(path):
+    """Load a JSON file, returning Python objects."""
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 def save_json(path, data):
+    """Persist Python objects to a JSON file."""
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
 def get_distance(origin, destination):
+    """Lookup distance in km between two locations, fallback to 1000km if unknown."""
     distances = load_json(DISTANCES_FILE)
     key = f"{origin}-{destination}"
     return distances.get(key, 1000)
 
 def carrier_lookup(name):
+    """Return carrier dict by name, or None if not found."""
     carriers = load_json(CARRIERS_FILE)
     for c in carriers:
         if c['name'] == name:
@@ -31,10 +39,15 @@ def carrier_lookup(name):
     return None
 
 def list_alternative_carriers(exclude=None):
+    """Return all carriers except the one named in exclude."""
     carriers = load_json(CARRIERS_FILE)
     return [c for c in carriers if c['name'] != exclude]
 
 def calc_emission(weight_kg, distance_km, mode=None, factor_override=None):
+    """
+    Calculate kg CO2e based on weight (tons), distance (km), and emission factor.
+    Emission factor (ef) pulled from emission_factors.json by mode, default 0.1 if missing.
+    """
     tons = weight_kg / 1000.0
     if factor_override is not None:
         ef = factor_override
@@ -44,9 +57,16 @@ def calc_emission(weight_kg, distance_km, mode=None, factor_override=None):
     return round(tons * distance_km * ef, 2)
 
 def calc_cost(distance_km, base_cost_per_km):
+    """Simple cost model: distance * base_cost_per_km."""
     return round(distance_km * base_cost_per_km, 2)
 
 def ensure_baselines():
+    """
+    Populate baseline fields for shipments:
+    - original_carrier, original_cost_usd, original_emission_kg_co2e
+    - current_cost_usd, current_emission_kg_co2e
+    Saves back to shipments.json if any changes.
+    """
     shipments = load_json(SHIPMENTS_FILE)
     changed = False
     for s in shipments:
@@ -55,24 +75,42 @@ def ensure_baselines():
         weight_kg = s['weight_kg']
         current_carrier = carrier_lookup(s['carrier'])
         mode = current_carrier['mode'] if current_carrier else None
+
         if 'original_carrier' not in s:
             s['original_carrier'] = s['carrier']
-            s['original_cost_usd'] = s.get('cost_usd', calc_cost(distance_km, current_carrier['base_cost_per_km'] if current_carrier else 0))
+            s['original_cost_usd'] = s.get(
+                'cost_usd',
+                calc_cost(distance_km, current_carrier['base_cost_per_km'] if current_carrier else 0)
+            )
             s['original_emission_kg_co2e'] = calc_emission(weight_kg, distance_km, mode=mode)
             changed = True
+
         if 'current_cost_usd' not in s or 'current_emission_kg_co2e' not in s:
-            s['current_cost_usd'] = s.get('cost_usd', calc_cost(distance_km, current_carrier['base_cost_per_km'] if current_carrier else 0))
+            s['current_cost_usd'] = s.get(
+                'cost_usd',
+                calc_cost(distance_km, current_carrier['base_cost_per_km'] if current_carrier else 0)
+            )
             s['current_emission_kg_co2e'] = calc_emission(weight_kg, distance_km, mode=mode)
             changed = True
+
     if changed:
         save_json(SHIPMENTS_FILE, shipments)
+
+
+# ---------- Routes ----------
+
+@app.get('/health')
+def health():
+    """Basic health check endpoint."""
+    return {"status": "ok"}, 200
+
 
 @app.get('/api/shipments')
 def get_shipments():
     shipments = load_json(SHIPMENTS_FILE)
     return jsonify(shipments)
 
-# FIXED: proper route parameter (no HTML-escaped angle brackets)
+
 @app.get('/api/shipments/<shipment_id>')
 def get_shipment(shipment_id):
     shipments = load_json(SHIPMENTS_FILE)
@@ -80,6 +118,7 @@ def get_shipment(shipment_id):
         if s['shipment_id'] == shipment_id:
             return jsonify(s)
     return jsonify({"error": "Not found"}), 404
+
 
 @app.post('/api/calculate_emission')
 def calculate_emission_endpoint():
@@ -106,9 +145,14 @@ def calculate_emission_endpoint():
     emission = calc_emission(weight_kg, distance_km, mode=mode)
 
     return jsonify({
-        "origin": origin, "destination": destination, "weight_kg": weight_kg,
-        "mode": mode, "distance_km": distance_km, "emission_kg_co2e": emission
+        "origin": origin,
+        "destination": destination,
+        "weight_kg": weight_kg,
+        "mode": mode,
+        "distance_km": distance_km,
+        "emission_kg_co2e": emission
     })
+
 
 @app.get('/api/optimization/<shipment_id>')
 def optimization(shipment_id):
@@ -134,13 +178,17 @@ def optimization(shipment_id):
         alt_emission = calc_emission(weight_kg, distance_km, mode=alt['mode'])
         alt_cost = calc_cost(distance_km, alt['base_cost_per_km'])
         alternatives.append({
-            "carrier": alt['name'], "mode": alt['mode'],
+            "carrier": alt['name'],
+            "mode": alt['mode'],
             "distance_km": distance_km,
             "emission_kg_co2e": alt_emission,
             "estimated_cost_usd": alt_cost
         })
 
-    best = sorted(alternatives, key=lambda x: (x['emission_kg_co2e'], x['estimated_cost_usd']))[0] if alternatives else None
+    best = sorted(
+        alternatives,
+        key=lambda x: (x['emission_kg_co2e'], x['estimated_cost_usd'])
+    )[0] if alternatives else None
 
     return jsonify({
         "shipment_id": shipment_id,
@@ -154,6 +202,7 @@ def optimization(shipment_id):
         "alternatives": alternatives,
         "recommended": best
     })
+
 
 @app.post('/api/approve')
 def approve():
@@ -184,7 +233,13 @@ def approve():
         return jsonify({"error": "Shipment not found"}), 404
 
     save_json(SHIPMENTS_FILE, shipments)
-    return jsonify({"message": "Approval recorded", "shipment_id": shipment_id, "chosen_carrier": chosen_carrier, "comments": comments})
+    return jsonify({
+        "message": "Approval recorded",
+        "shipment_id": shipment_id,
+        "chosen_carrier": chosen_carrier,
+        "comments": comments
+    })
+
 
 @app.post('/api/reject')
 def reject():
@@ -212,7 +267,12 @@ def reject():
         return jsonify({"error": "Shipment not found"}), 404
 
     save_json(SHIPMENTS_FILE, shipments)
-    return jsonify({"message": "Rejection recorded", "shipment_id": shipment_id, "comments": comments})
+    return jsonify({
+        "message": "Rejection recorded",
+        "shipment_id": shipment_id,
+        "comments": comments
+    })
+
 
 @app.get('/api/dashboard')
 def dashboard_metrics():
@@ -267,6 +327,9 @@ def dashboard_metrics():
         'shipments': details
     })
 
+
 if __name__ == '__main__':
+    # Initialize baselines and run locally (Render will use gunicorn)
     ensure_baselines()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.
