@@ -1,0 +1,69 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shipment Optimization Approval Form</title>
+  /static/style.css
+</head>
+<body>
+  <header>
+    <h1>Shipment Optimization Approval</h1>
+    <p>Review the recommended optimization and approve or reject.</p>
+  </header>
+  <main>
+    <section class="selector card">
+      <label for="shipmentSelect">Select Shipment:</label>
+      <select id="shipmentSelect"></select>
+      <button id="loadBtn">Load</button>
+    </section>
+
+    <section id="comparison" class="card">
+      <h2>Comparison</h2>
+      <div class="grid">
+        <div>
+          <h3>Current</h3>
+          <ul id="currentDetails"></ul>
+        </div>
+        <div>
+          <h3>Recommended</h3>
+          <ul id="recommendedDetails"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="alternatives" class="card">
+      <h2>All Alternatives</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Carrier</th>
+            <th>Mode</th>
+            <th>Distance (km)</th>
+            <th>Emission (kg CO2e)</th>
+            <th>Est. Cost (USD)</th>
+            <th>Choose</th>
+          </tr>
+        </thead>
+        <tbody id="altTableBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Decision</h2>
+      <div class="decision">
+        <label><input type="radio" name="decision" value="approve" checked> Approve</label>
+        <label><input type="radio" name="decision" value="reject"> Reject</label>
+      </div>
+      <div>
+        <label for="comments">Comments (optional)</label>
+        <textarea id="comments" rows="4" placeholder="Add any notes for audit..."></textarea>
+      </div>
+      <button id="submitBtn" class="primary">Submit Decision</button>
+      <div id="statusMsg" class="status"></div>
+    </section>
+  </main>
+  <footer><small>Mock UI for Agentic Bounty Challenge — Carbon Optimization</small></footer>
+  <script src="/static/script.jsody>
+</html>

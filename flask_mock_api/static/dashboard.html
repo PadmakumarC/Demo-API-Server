@@ -1,0 +1,78 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Optimization Dashboard</title>
+  /static/style.css
+</head>
+<body>
+  <header>
+    <h1>Optimization Dashboard</h1>
+    <p>Summary of emissions and cost impact</p>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Summary</h2>
+      <div id="summary"></div>
+    </section>
+    <section class="card">
+      <h2>Shipments</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Route</th><th>Status</th>
+            <th>Orig Carrier</th><th>Curr Carrier</th>
+            <th>Orig Emission</th><th>Curr Emission</th>
+            <th>Orig Cost</th><th>Curr Cost</th>
+            <th>Δ Emission</th><th>Δ Cost</th>
+          </tr>
+        </thead>
+        <tbody id="shipTableBody"></tbody>
+      </table>
+    </section>
+  </main>
+  <footer><small>Mock UI for Agentic Bounty Challenge — Carbon Optimization</small></footer>
+  <script>
+  async function loadDashboard(){
+    const res = await fetch('/api/dashboard');
+    const data = await res.json();
+
+    const s = data.summary;
+    document.getElementById('summary').innerHTML = `
+      <ul>
+        <li><strong>Total shipments:</strong> ${s.total_shipments}</li>
+        <li><strong>Approved:</strong> ${s.approved} &nbsp; <strong>Rejected:</strong> ${s.rejected} &nbsp; <strong>Pending:</strong> ${s.pending}</li>
+        <li><strong>Total emission (original):</strong> ${s.total_emission_original} kg CO2e</li>
+        <li><strong>Total emission (current):</strong> ${s.total_emission_current} kg CO2e</li>
+        <li><strong>Reduction:</strong> ${s.total_emission_reduction} kg CO2e (${s.total_emission_reduction_pct}%)</li>
+        <li><strong>Cost (original):</strong> $${s.total_cost_original} &nbsp; <strong>Cost (current):</strong> $${s.total_cost_current}</li>
+        <li><strong>Total Δ Cost:</strong> $${s.total_cost_delta}</li>
+      </ul>
+    `;
+
+    const tbody = document.getElementById('shipTableBody');
+    tbody.innerHTML = '';
+    for (const r of data.shipments) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.shipment_id}</td>
+        <td>${r.origin} → ${r.destination}</td>
+        <td>${r.status}</td>
+        <td>${r.original_carrier ?? '-'}</td>
+        <td>${r.current_carrier ?? '-'}</td>
+        <td>${r.original_emission_kg_co2e ?? '-'}</td>
+        <td>${r.current_emission_kg_co2e ?? '-'}</td>
+        <td>${r.original_cost_usd ?? '-'}</td>
+        <td>${r.current_cost_usd ?? '-'}</td>
+        <td>${r.emission_delta ?? '-'}</td>
+        <td>${r.cost_delta ?? '-'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+  loadDashboard();
+  </script>
+</body>
+</html>

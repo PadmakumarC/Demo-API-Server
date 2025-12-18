@@ -1,0 +1,26 @@
+[
+  {
+    "name": "AirFast",
+    "mode": "air",
+    "emission_factor_ton_km": 0.9,
+    "base_cost_per_km": 0.3
+  },
+  {
+    "name": "RoadGulf",
+    "mode": "road",
+    "emission_factor_ton_km": 0.18,
+    "base_cost_per_km": 0.08
+  },
+  {
+    "name": "SeaWise",
+    "mode": "sea",
+    "emission_factor_ton_km": 0.03,
+    "base_cost_per_km": 0.05
+  },
+  {
+    "name": "RailEuro",
+    "mode": "rail",
+    "emission_factor_ton_km": 0.04,
+    "base_cost_per_km": 0.06
+  }
+]

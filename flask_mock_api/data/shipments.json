@@ -1,0 +1,32 @@
+[
+  {
+    "shipment_id": "SHP12345",
+    "origin": "Dubai",
+    "destination": "Berlin",
+    "weight_kg": 1200,
+    "carrier": "AirFast",
+    "cost_usd": 1500,
+    "delivery_date": "2025-12-15",
+    "status": "CREATED",
+    "original_carrier": "AirFast",
+    "original_cost_usd": 1500,
+    "original_emission_kg_co2e": 4968.0,
+    "current_cost_usd": 1500,
+    "current_emission_kg_co2e": 4968.0
+  },
+  {
+    "shipment_id": "SHP67890",
+    "origin": "Dubai",
+    "destination": "Mumbai",
+    "weight_kg": 800,
+    "carrier": "RoadGulf",
+    "cost_usd": 400,
+    "delivery_date": "2025-12-20",
+    "status": "CREATED",
+    "original_carrier": "RoadGulf",
+    "original_cost_usd": 400,
+    "original_emission_kg_co2e": 288.0,
+    "current_cost_usd": 400,
+    "current_emission_kg_co2e": 288.0
+  }
+]
