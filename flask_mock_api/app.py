@@ -1,7 +1,7 @@
-
 # flask_mock_api/app.py
 from flask import Flask, jsonify, request
-import json, os
+import json, os, random, uuid
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -11,6 +11,10 @@ SHIPMENTS_FILE = os.path.join(DATA_DIR, 'shipments.json')
 CARRIERS_FILE = os.path.join(DATA_DIR, 'carriers.json')
 DISTANCES_FILE = os.path.join(DATA_DIR, 'distances.json')
 EMISSION_FILE = os.path.join(DATA_DIR, 'emission_factors.json')
+
+# Dynamic mode controls
+DYNAMIC_MODE = os.getenv('DYNAMIC_MODE', 'false').lower() in ('1', 'true', 'yes')
+DEFAULT_RANDOM_COUNT = int(os.getenv('DEFAULT_RANDOM_COUNT', '25'))
 
 
 # ---------- Utility functions ----------
@@ -22,6 +26,7 @@ def load_json(path):
 
 def save_json(path, data):
     """Persist Python objects to a JSON file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
@@ -98,17 +103,111 @@ def ensure_baselines():
         save_json(SHIPMENTS_FILE, shipments)
 
 
+# ---------- Random generation helpers ----------
+
+def _derive_locations_from_distances():
+    """Derive a unique list of locations from DISTANCES_FILE keys."""
+    locs = set()
+    try:
+        distances = load_json(DISTANCES_FILE)
+        for k in distances.keys():
+            try:
+                a, b = k.split('-')
+                locs.add(a); locs.add(b)
+            except ValueError:
+                # Ignore malformed keys
+                pass
+    except FileNotFoundError:
+        pass
+
+    if not locs:
+        # Fallback set (tweak as you like)
+        locs = {
+            'DXB','DOH','DEL','BOM','LHR','LGW','FRA','CDG','AMS','MAD',
+            'JFK','EWR','SFO','LAX','ORD','DFW','SEA',
+            'SIN','HKG','NRT','ICN','SYD','MEL','YYZ'
+        }
+    return sorted(locs)
+
+def _make_random_id(rnd: random.Random) -> str:
+    return f"SHP{uuid.uuid4().hex[:8].upper()}"
+
+def generate_random_shipments(count=25, seed=None, persist=False):
+    """
+    Generate random shipments. If persist=True, save to SHIPMENTS_FILE and return list.
+    If persist=False, return list without saving.
+    """
+    rnd = random.Random(seed) if seed is not None else random
+    locations = _derive_locations_from_distances()
+    carriers_list = []
+    try:
+        carriers_list = load_json(CARRIERS_FILE)
+    except FileNotFoundError:
+        carriers_list = []
+
+    shipments = []
+    for _ in range(int(count)):
+        origin, destination = rnd.sample(locations, 2)
+        carrier_obj = rnd.choice(carriers_list) if carriers_list else None
+        carrier_name = carrier_obj['name'] if carrier_obj else None
+        base_cost_per_km = (
+            carrier_obj['base_cost_per_km'] if carrier_obj else round(rnd.uniform(0.2, 1.2), 2)
+        )
+        weight_kg = rnd.randint(100, 5000)
+        shipment_id = _make_random_id(rnd)
+        distance_km = get_distance(origin, destination)
+        cost_usd = calc_cost(distance_km, base_cost_per_km)
+
+        # Slightly bias to CREATED so your approval flows remain relevant
+        status = rnd.choice(['CREATED','APPROVED','REJECTED','CREATED','CREATED'])
+
+        shipments.append({
+            'shipment_id': shipment_id,
+            'origin': origin,
+            'destination': destination,
+            'carrier': carrier_name,
+            'weight_kg': weight_kg,
+            'cost_usd': cost_usd,
+            'status': status,
+            'created_at': datetime.utcnow().isoformat() + 'Z'
+        })
+
+    if persist:
+        save_json(SHIPMENTS_FILE, shipments)
+
+    return shipments
+
+
 # ---------- Routes ----------
 
 @app.get('/health')
 def health():
-    """Basic health check endpoint."""
     return {"status": "ok"}, 200
 
 
 @app.get('/api/shipments')
 def get_shipments():
+    """
+    If DYNAMIC_MODE=true (env) OR ?random=true, return random shipments (no file writes).
+    Otherwise return shipments from shipments.json.
+    """
+    use_random = DYNAMIC_MODE or (request.args.get('random', '').lower() in ('1','true','yes'))
+    if use_random:
+        count = int(request.args.get('count', DEFAULT_RANDOM_COUNT))
+        seed = request.args.get('seed')
+        shipments = generate_random_shipments(count=count, seed=seed, persist=False)
+        return jsonify(shipments)
+
     shipments = load_json(SHIPMENTS_FILE)
+    return jsonify(shipments)
+
+
+@app.get('/api/shipments/random')
+def get_shipments_random_alias():
+    """Alias endpoint: always return random shipments, does not persist."""
+    count = int(request.args.get('count', DEFAULT_RANDOM_COUNT))
+    seed = request.args.get('seed')
+    shipments = generate_random_shipments(count=count, seed=seed, persist=False)
     return jsonify(shipments)
 
 
@@ -329,8 +428,27 @@ def dashboard_metrics():
     })
 
 
+@app.post('/api/seed')
+def seed_random_shipments():
+    """
+    Regenerate shipments.json with random shipments and initialize baselines.
+    Body: {"count": 50, "seed": 123}  (both optional)
+    """
+    data = request.get_json(silent=True) or {}
+    count = int(data.get('count', DEFAULT_RANDOM_COUNT))
+    seed = data.get('seed')
+    shipments = generate_random_shipments(count=count, seed=seed, persist=True)
+    ensure_baselines()
+    return jsonify({
+        "message": "seeded",
+        "count": len(shipments),
+               "sample_ids": [s['shipment_id'] for s in shipments[:5]]
+    })
+
+
 if __name__ == '__main__':
     # Initialize baselines and run locally (Render will use gunicorn)
+    # For local dev: uncomment to pre-seed once
+    # generate_random_shipments(count=DEFAULT_RANDOM_COUNT, seed=42, persist=True)
     ensure_baselines()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
