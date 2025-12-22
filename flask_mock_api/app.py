@@ -1,7 +1,7 @@
-
 # flask_mock_api/app.py
 from flask import Flask, jsonify, request
-import json, os
+import json, os, random, uuid
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -11,6 +11,11 @@ SHIPMENTS_FILE = os.path.join(DATA_DIR, 'shipments.json')
 CARRIERS_FILE = os.path.join(DATA_DIR, 'carriers.json')
 DISTANCES_FILE = os.path.join(DATA_DIR, 'distances.json')
 EMISSION_FILE = os.path.join(DATA_DIR, 'emission_factors.json')
+
+# ---------- Dynamic controls ----------
+# If true, GET /api/shipments will ALWAYS return random data (no file I/O)
+DYNAMIC_MODE = os.getenv('DYNAMIC_MODE', 'false').lower() in ('1', 'true', 'yes')
+DEFAULT_RANDOM_COUNT = int(os.getenv('DEFAULT_RANDOM_COUNT', '25'))
 
 
 # ---------- Utility functions ----------
@@ -28,39 +33,51 @@ def save_json(path, data):
 
 def get_distance(origin, destination):
     """Lookup distance in km between two locations, fallback to 1000km if unknown."""
-    distances = load_json(DISTANCES_FILE)
+    try:
+        distances = load_json(DISTANCES_FILE)
+    except FileNotFoundError:
+        distances = {}
     key = f"{origin}-{destination}"
     return distances.get(key, 1000)
 
 def carrier_lookup(name):
     """Return carrier dict by name, or None if not found."""
-    carriers = load_json(CARRIERS_FILE)
+    try:
+        carriers = load_json(CARRIERS_FILE)
+    except FileNotFoundError:
+        carriers = []
     for c in carriers:
-        if c['name'] == name:
+        if c.get('name') == name:
             return c
     return None
 
 def list_alternative_carriers(exclude=None):
     """Return all carriers except the one named in exclude."""
-    carriers = load_json(CARRIERS_FILE)
-    return [c for c in carriers if c['name'] != exclude]
+    try:
+        carriers = load_json(CARRIERS_FILE)
+    except FileNotFoundError:
+        carriers = []
+    return [c for c in carriers if c.get('name') != exclude]
 
 def calc_emission(weight_kg, distance_km, mode=None, factor_override=None):
     """
     Calculate kg CO2e based on weight (tons), distance (km), and emission factor.
     Emission factor (ef) pulled from emission_factors.json by mode, default 0.1 if missing.
     """
-    tons = weight_kg / 1000.0
+    tons = float(weight_kg) / 1000.0
     if factor_override is not None:
         ef = factor_override
     else:
-        ef_map = load_json(EMISSION_FILE)
+        try:
+            ef_map = load_json(EMISSION_FILE)
+        except FileNotFoundError:
+            ef_map = {}
         ef = ef_map.get(mode, 0.1)
-    return round(tons * distance_km * ef, 2)
+    return round(tons * float(distance_km) * float(ef), 2)
 
 def calc_cost(distance_km, base_cost_per_km):
     """Simple cost model: distance * base_cost_per_km."""
-    return round(distance_km * base_cost_per_km, 2)
+    return round(float(distance_km) * float(base_cost_per_km), 2)
 
 def ensure_baselines():
     """
@@ -99,20 +116,117 @@ def ensure_baselines():
         save_json(SHIPMENTS_FILE, shipments)
 
 
+# ---------- Random generation helpers ----------
+
+def _derive_locations_from_distances():
+    """Derive a unique list of locations from DISTANCES_FILE keys, with sensible fallbacks."""
+    locs = set()
+    try:
+        distances = load_json(DISTANCES_FILE)
+        for k in distances.keys():
+            try:
+                a, b = k.split('-')
+                locs.add(a.strip()); locs.add(b.strip())
+            except Exception:
+                pass
+    except FileNotFoundError:
+        pass
+    if not locs:
+        # Fallback universe—tweak to your demo needs
+        locs = {
+            'Dubai','Mumbai','Berlin','London','Paris','Frankfurt','Amsterdam','Madrid',
+            'Doha','Delhi','Bangalore','Hyderabad','Chennai','Singapore','Hong Kong'
+        }
+    return sorted(locs)
+
+def _load_carriers_safe():
+    try:
+        carriers = load_json(CARRIERS_FILE)
+    except FileNotFoundError:
+        carriers = [
+            {"name": "AirFast",  "mode": "air",  "base_cost_per_km": 0.55},
+            {"name": "RoadGulf", "mode": "road", "base_cost_per_km": 0.16},
+            {"name": "RailEuro", "mode": "rail", "base_cost_per_km": 0.12},
+            {"name": "SeaWise",  "mode": "sea",  "base_cost_per_km": 0.10},
+        ]
+    return carriers
+
+def _make_random_id(rnd: random.Random) -> str:
+    return f"SHP{uuid.uuid4().hex[:8].upper()}"
+
+def generate_random_shipments(count=25, seed=None):
+    """
+    Generate random shipments (no persistence). Includes `mode` derived from chosen carrier.
+    """
+    rnd = random.Random(seed) if seed is not None else random
+    locations = _derive_locations_from_distances()
+    carriers_list = _load_carriers_safe()
+
+    shipments = []
+    for _ in range(int(count)):
+        origin, destination = rnd.sample(locations, 2)
+        carrier_obj = rnd.choice(carriers_list)
+        carrier_name = carrier_obj['name']
+        base_cost_per_km = float(carrier_obj['base_cost_per_km'])
+        mode = carrier_obj['mode']
+
+        weight_kg = rnd.randint(200, 5000)
+        shipment_id = _make_random_id(rnd)
+        distance_km = get_distance(origin, destination)
+        cost_usd = calc_cost(distance_km, base_cost_per_km)
+
+        status = rnd.choice(['CREATED','CREATED','APPROVED','REJECTED'])  # bias to CREATED
+        delivery_date = (datetime.utcnow()).strftime('%Y-%m-%d')
+
+        shipments.append({
+            'shipment_id': shipment_id,
+            'origin': origin,
+            'destination': destination,
+            'carrier': carrier_name,
+            'mode': mode,
+            'weight_kg': weight_kg,
+            'cost_usd': cost_usd,
+            'status': status,
+            'delivery_date': delivery_date,
+            'created_at': datetime.utcnow().isoformat() + 'Z'
+        })
+
+    # enrich with baseline fields for nicer demos
+    for s in shipments:
+        distance_km = get_distance(s['origin'], s['destination'])
+        s['original_carrier'] = s['carrier']
+        s['original_cost_usd'] = s.get('cost_usd')
+        s['original_emission_kg_co2e'] = calc_emission(s['weight_kg'], distance_km, mode=s['mode'])
+        s['current_cost_usd'] = s['original_cost_usd']
+        s['current_emission_kg_co2e'] = s['original_emission_kg_co2e']
+
+    return shipments
+
+
 # ---------- Routes ----------
 
 @app.get('/health')
 def health():
-    """Basic health check endpoint."""
     return {"status": "ok"}, 200
 
 
 @app.get('/api/shipments')
 def get_shipments():
     """
-    Return all shipments, enriched with the transport `mode` based on the carrier.
-    If the carrier is unknown/missing, `mode` will be None.
+    Return shipments:
+      - If DYNAMIC_MODE=true or ?random=1 → return a fresh random set (no persistence).
+        Optional: ?count=NN, ?seed=NNN for deterministic demos.
+      - Else → return file-based shipments, enriched with `mode`.
     """
+    use_random = DYNAMIC_MODE or (request.args.get('random', '').lower() in ('1', 'true', 'yes'))
+    if use_random:
+        count = int(request.args.get('count', DEFAULT_RANDOM_COUNT))
+        seed_param = request.args.get('seed', None)
+        seed = int(seed_param) if (seed_param is not None and seed_param.isdigit()) else None
+        shipments = generate_random_shipments(count=count, seed=seed)
+        return jsonify(shipments)
+
+    # File-backed enrichment
     shipments = load_json(SHIPMENTS_FILE)
     enriched = []
     for s in shipments:
@@ -128,7 +242,6 @@ def get_shipment(shipment_id):
     shipments = load_json(SHIPMENTS_FILE)
     for s in shipments:
         if s['shipment_id'] == shipment_id:
-            # Enrich single shipment with mode as well for consistency
             c = carrier_lookup(s.get('carrier'))
             s_enriched = dict(s)
             s_enriched['mode'] = c['mode'] if c else None
@@ -138,9 +251,7 @@ def get_shipment(shipment_id):
 
 @app.get('/api/shipments/<shipment_id>/mode')
 def get_shipment_mode(shipment_id):
-    """
-    Optional helper: return just the mode for a shipment (derived from carrier).
-    """
+    """Return just the mode for a shipment (derived from carrier)."""
     shipments = load_json(SHIPMENTS_FILE)
     shipment = next((x for x in shipments if x['shipment_id'] == shipment_id), None)
     if not shipment:
@@ -254,9 +365,7 @@ def optimization(shipment_id):
 
 @app.post('/api/approve')
 def approve():
-    """
-    Record approval; optionally switch to a chosen_carrier and recompute current cost/emission.
-    """
+    """Record approval and recompute current cost/emission for chosen carrier."""
     data = request.get_json(force=True)
     shipment_id = data.get('shipment_id')
     chosen_carrier = data.get('chosen_carrier')
@@ -294,9 +403,7 @@ def approve():
 
 @app.post('/api/reject')
 def reject():
-    """
-    Record rejection; recompute current cost/emission to reflect existing carrier details.
-    """
+    """Record rejection and recompute current cost/emission for existing carrier."""
     data = request.get_json(force=True)
     shipment_id = data.get('shipment_id')
     comments = data.get('comments', '')
@@ -330,10 +437,7 @@ def reject():
 
 @app.get('/api/dashboard')
 def dashboard_metrics():
-    """
-    Return aggregate KPIs and per-shipment deltas,
-    ensuring baseline fields exist first.
-    """
+    """Return aggregate KPIs and per-shipment deltas; ensure baselines first."""
     shipments = load_json(SHIPMENTS_FILE)
     ensure_baselines()
 
@@ -387,9 +491,11 @@ def dashboard_metrics():
 
 
 # ---------- Entrypoint for local run (Render uses Gunicorn) ----------
-
 if __name__ == '__main__':
-    # Initialize baselines and run locally (Render will use gunicorn in production)
-    ensure_baselines()
+    # Initialize baselines for file-backed mode; random mode skips
+    try:
+        ensure_baselines()
+    except Exception:
+        pass
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
