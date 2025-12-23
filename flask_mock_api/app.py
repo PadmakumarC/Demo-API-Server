@@ -89,7 +89,7 @@ def calc_emission_with_provenance(weight_kg, distance_km, mode=None, factor_over
         ef, source = get_emission_factor(mode)
     emission = round(tons * float(distance_km) * float(ef), 2)
     details = {
-        "method": "weight_tons × distance_km × emission_factor_kgco2e_per_ton_km",
+        "method": "weight_tons * distance_km * emission_factor_kgco2e_per_ton_km",
         "weight_tons": round(tons, 6),
         "distance_km": float(distance_km),
         "mode": mode,
