@@ -1,7 +1,8 @@
+
 # flask_mock_api/app.py
 from flask import Flask, jsonify, request
 import json, os, random, uuid
-from datetime import datetime, date
+from datetime import datetime, date, timedelta  # FIX: add timedelta
 
 app = Flask(__name__)
 
@@ -15,6 +16,10 @@ EMISSION_FILE = os.path.join(DATA_DIR, 'emission_factors.json')
 # ---------- Dynamic controls ----------
 DYNAMIC_MODE = os.getenv('DYNAMIC_MODE', 'false').lower() in ('1', 'true', 'yes')
 DEFAULT_RANDOM_COUNT = int(os.getenv('DEFAULT_RANDOM_COUNT', '25'))
+
+# ---------- Ephemeral cache for last random set (optional same-session lookups) ----------
+LAST_RANDOM_SHIPMENTS = []
+LAST_RANDOM_INDEX = {}
 
 # ---------- Utility functions ----------
 
@@ -74,7 +79,7 @@ def get_emission_factor(mode):
         return val, "internal:emission_factors.json"
     return 0.1, "default:0.1 (missing or unknown mode)"
 
-# NEW: emission with provenance (method, factor, source, weights)
+# Emission with provenance (method, factor, source)
 def calc_emission_with_provenance(weight_kg, distance_km, mode=None, factor_override=None):
     """
     Calculate emission and include provenance fields:
@@ -89,7 +94,7 @@ def calc_emission_with_provenance(weight_kg, distance_km, mode=None, factor_over
         ef, source = get_emission_factor(mode)
     emission = round(tons * float(distance_km) * float(ef), 2)
     details = {
-        "method": "weight_tons * distance_km * emission_factor_kgco2e_per_ton_km",
+        "method": "weight_tons x distance_km x emission_factor_kgco2e_per_ton_km",  # FIX: use 'x'
         "weight_tons": round(tons, 6),
         "distance_km": float(distance_km),
         "mode": mode,
@@ -107,7 +112,7 @@ def calc_cost(distance_km, base_cost_per_km, surcharges_usd=0.0):
     """Cost model: distance * base_cost_per_km + surcharges."""
     return round(float(distance_km) * float(base_cost_per_km) + float(surcharges_usd), 2)
 
-# NEW: default transit days by mode (can be overridden in carriers.json with avg_transit_days)
+# Default transit days by mode (can be overridden in carriers.json with avg_transit_days)
 def default_transit_days_for_mode(mode):
     mapping = {'air': 2, 'road': 5, 'rail': 4, 'sea': 14}
     return mapping.get((mode or '').lower(), 5)
@@ -127,7 +132,7 @@ def ensure_baselines():
     for s in shipments:
         origin = s['origin']; destination = s['destination']
         distance_km = get_distance(origin, destination)
-        s['distance_km'] = distance_km  # NEW: persist distance
+        s['distance_km'] = distance_km
         weight_kg = s['weight_kg']
         current_carrier = carrier_lookup(s.get('carrier'))
         mode = current_carrier['mode'] if current_carrier else None
@@ -138,14 +143,14 @@ def ensure_baselines():
             s['original_cost_usd'] = s.get('cost_usd', calc_cost(distance_km, base_cost))
             emi_val, emi_det = calc_emission_with_provenance(weight_kg, distance_km, mode=mode)
             s['original_emission_kg_co2e'] = emi_val
-            s['original_emission_details'] = emi_det  # NEW
+            s['original_emission_details'] = emi_det
             changed = True
 
         if 'current_cost_usd' not in s or 'current_emission_kg_co2e' not in s:
             s['current_cost_usd'] = s.get('cost_usd', calc_cost(distance_km, base_cost))
             emi_val, emi_det = calc_emission_with_provenance(weight_kg, distance_km, mode=mode)
             s['current_emission_kg_co2e'] = emi_val
-            s['current_emission_details'] = emi_det  # NEW
+            s['current_emission_details'] = emi_det
             changed = True
 
     if changed:
@@ -185,12 +190,12 @@ def _load_carriers_safe():
         ]
     return carriers
 
-def _make_random_id(rnd: random.Random) -> str:
+def _make_random_id(rnd: random.Random) -> str:  # FIX: proper arrow
     return f"SHP{uuid.uuid4().hex[:8].upper()}"
 
 def generate_random_shipments(count=25, seed=None):
     """
-    Generate random shipments (no persistence). Includes `mode` derived from chosen carrier,
+    Generate random shipments (no persistence here). Includes `mode` derived from chosen carrier,
     and enriches with distance and emission provenance for demo clarity.
     """
     rnd = random.Random(seed) if seed is not None else random
@@ -222,7 +227,7 @@ def generate_random_shipments(count=25, seed=None):
             'carrier': carrier_name,
             'mode': mode,
             'weight_kg': weight_kg,
-            'distance_km': distance_km,          # NEW
+            'distance_km': distance_km,
             'cost_usd': cost_usd,
             'status': status,
             'delivery_date': delivery_date,
@@ -230,15 +235,15 @@ def generate_random_shipments(count=25, seed=None):
             'original_carrier': carrier_name,
             'original_cost_usd': cost_usd,
             'original_emission_kg_co2e': emi_val,
-            'original_emission_details': emi_det, # NEW
+            'original_emission_details': emi_det,
             'current_cost_usd': cost_usd,
             'current_emission_kg_co2e': emi_val,
-            'current_emission_details': emi_det   # NEW
+            'current_emission_details': emi_det
         })
 
     return shipments
 
-# ---------- Policy helpers (NEW) ----------
+# ---------- Policy helpers ----------
 
 def parse_policy_from_request(data_or_args):
     """
@@ -292,7 +297,7 @@ def health():
 def get_shipments():
     """
     Return shipments:
-      - If DYNAMIC_MODE=true or ?random=1 → return a fresh random set (no persistence).
+      - If DYNAMIC_MODE=true or ?random=1 → return a fresh random set and persist it.
         Optional: ?count=NN, ?seed=NNN for deterministic demos.
       - Else → return file-based shipments, enriched with `mode` and `distance_km`.
     """
@@ -302,21 +307,43 @@ def get_shipments():
         seed_param = request.args.get('seed', None)
         seed = int(seed_param) if (seed_param is not None and seed_param.isdigit()) else None
         shipments = generate_random_shipments(count=count, seed=seed)
+
+        # Persist random set to file so ID lookups work later
+        save_json(SHIPMENTS_FILE, shipments)
+
+        # Also populate in-memory cache for same-session lookups
+        global LAST_RANDOM_SHIPMENTS, LAST_RANDOM_INDEX
+        LAST_RANDOM_SHIPMENTS = shipments
+        LAST_RANDOM_INDEX = { s['shipment_id']: s for s in shipments }
+
         return jsonify(shipments)
 
+    # File-backed enrichment
     shipments = load_json(SHIPMENTS_FILE)
     enriched = []
     for s in shipments:
         c = carrier_lookup(s.get('carrier'))
         s_with_mode = dict(s)
         s_with_mode['mode'] = c['mode'] if c else s.get('mode')
-        # Ensure distance is present
         s_with_mode['distance_km'] = s.get('distance_km') or get_distance(s['origin'], s['destination'])
         enriched.append(s_with_mode)
     return jsonify(enriched)
 
-@app.get('/api/shipments/<shipment_id>')
+@app.get('/api/shipments/<shipment_id>')  # FIX: route placeholder
 def get_shipment(shipment_id):
+    use_random = DYNAMIC_MODE or (request.args.get('random', '').lower() in ('1', 'true', 'yes'))
+
+    # Try in-memory cache when random mode is active
+    if use_random and LAST_RANDOM_INDEX:
+        s = LAST_RANDOM_INDEX.get(shipment_id)
+        if s:
+            c = carrier_lookup(s.get('carrier'))
+            s_enriched = dict(s)
+            s_enriched['mode'] = c['mode'] if c else s.get('mode')
+            s_enriched['distance_km'] = s.get('distance_km') or get_distance(s['origin'], s['destination'])
+            return jsonify(s_enriched)
+        # Fall through to file-backed lookup
+
     shipments = load_json(SHIPMENTS_FILE)
     for s in shipments:
         if s['shipment_id'] == shipment_id:
@@ -327,9 +354,20 @@ def get_shipment(shipment_id):
             return jsonify(s_enriched)
     return jsonify({"error": "Not found"}), 404
 
-@app.get('/api/shipments/<shipment_id>/mode')
+@app.get('/api/shipments/<shipment_id>/mode')  # FIX: route placeholder
 def get_shipment_mode(shipment_id):
     """Return just the mode for a shipment (derived from carrier)."""
+    use_random = DYNAMIC_MODE or (request.args.get('random', '').lower() in ('1', 'true', 'yes'))
+    if use_random and LAST_RANDOM_INDEX:
+        s = LAST_RANDOM_INDEX.get(shipment_id)
+        if s:
+            c = carrier_lookup(s.get('carrier'))
+            return jsonify({
+                "shipment_id": shipment_id,
+                "carrier": s.get('carrier'),
+                "mode": (c['mode'] if c else s.get('mode'))
+            })
+
     shipments = load_json(SHIPMENTS_FILE)
     shipment = next((x for x in shipments if x['shipment_id'] == shipment_id), None)
     if not shipment:
@@ -382,10 +420,10 @@ def calculate_emission_endpoint():
         "mode": mode,
         "distance_km": distance_km,
         "emission_kg_co2e": emission,
-        "emission_calculation": details  # NEW: explainability
+        "emission_calculation": details
     })
 
-@app.get('/api/optimization/<shipment_id>')
+@app.get('/api/optimization/<shipment_id>')  # FIX: route placeholder
 def optimization(shipment_id):
     """
     Compare current carrier vs alternatives for a shipment:
@@ -397,8 +435,13 @@ def optimization(shipment_id):
     Optional query params (policy):
       ?sla_due_date=YYYY-MM-DD&sla_priority=critical|normal&budget_cap_usd=650&emission_reduction_min_pct=30&budget_increase_max_pct=10
     """
-    shipments = load_json(SHIPMENTS_FILE)
-    shipment = next((s for s in shipments if s['shipment_id'] == shipment_id), None)
+    use_random = DYNAMIC_MODE or (request.args.get('random', '').lower() in ('1', 'true', 'yes'))
+    if use_random and LAST_RANDOM_INDEX:
+        shipment = LAST_RANDOM_INDEX.get(shipment_id)
+    else:
+        shipments = load_json(SHIPMENTS_FILE)
+        shipment = next((s for s in shipments if s['shipment_id'] == shipment_id), None)
+
     if not shipment:
         return jsonify({"error": "Shipment not found"}), 404
 
@@ -463,13 +506,13 @@ def optimization(shipment_id):
             "mode": alt['mode'],
             "distance_km": distance_km,
             "emission_kg_co2e": alt_emission,
-            "emission_calculation": alt_em_det,  # NEW
+            "emission_calculation": alt_em_det,
             "estimated_cost_usd": alt_cost,
             "transit_days": alt_transit,
             "policy_alignment": policy_eval if policy else None
         })
 
-    # Recommendation logic
+    # Recommend by lowest emission, then lowest cost
     candidates = alternatives[:]
     # If policy present, pre-filter to those meeting policy (all applicable booleans True)
     if policy and current_emission:
@@ -478,7 +521,7 @@ def optimization(shipment_id):
             checks = []
             # Emission reduction
             checks.append(pa.get('meets_min_emission_reduction') is True)
-            # Budget: if both cap and increase pct provided, both must be OK; if only one provided, that one must be OK
+            # Budget checks
             cap = pa.get('within_budget_cap')
             inc = pa.get('within_budget_increase_pct')
             if policy.get('budget_cap_usd') is not None and policy.get('budget_increase_max_pct') is not None:
@@ -508,7 +551,7 @@ def optimization(shipment_id):
             "mode": current_mode,
             "distance_km": distance_km,
             "emission_kg_co2e": current_emission,
-            "emission_calculation": current_em_det,  # NEW
+            "emission_calculation": current_em_det,
             "cost_usd": current_cost,
             "transit_days": current_transit
         },
@@ -516,33 +559,33 @@ def optimization(shipment_id):
         "recommended": recommended
     })
 
-# NEW: scenario simulation endpoint for Agent reasoning
-@app.post('/api/shipments/<shipment_id>/simulate')
+# Scenario simulation endpoint for Agent reasoning
+@app.post('/api/shipments/<shipment_id>/simulate')  # FIX: route placeholder
 def simulate(shipment_id):
     """
     Simulate an alternative scenario for a shipment.
     Request JSON:
     {
-      "mode": "rail",                // optional
-      "carrier": "RailEuro",         // optional
-      "distance_km": 2100,           // optional (defaults to O-D distance)
-      "emission_factor_kgco2e_per_ton_km": 0.034, // optional
-      "expected_transit_days": 4,    // optional (else carrier/default)
-      "base_cost_per_km": 0.12,      // optional (else carrier)
-      "surcharges_usd": 20,          // optional (default 0)
-      "policy": {                    // optional policy to evaluate recommendation fit
-        "sla_due_date": "2025-12-22",
-        "sla_priority": "critical",
-        "budget_cap_usd": 650,
-        "emission_reduction_min_pct": 30,
-        "budget_increase_max_pct": 10
-      }
+      "mode": "rail",
+      "carrier": "RailEuro",
+      "distance_km": 2100,
+      "emission_factor_kgco2e_per_ton_km": 0.034,
+      "expected_transit_days": 4,
+      "base_cost_per_km": 0.12,
+      "surcharges_usd": 20,
+      "policy": { ... }
     }
     Response includes comparison vs current and policy alignment.
     """
     data = request.get_json(force=True)
-    shipments = load_json(SHIPMENTS_FILE)
-    shipment = next((s for s in shipments if s['shipment_id'] == shipment_id), None)
+
+    use_random = DYNAMIC_MODE or (request.args.get('random', '').lower() in ('1', 'true', 'yes'))
+    if use_random and LAST_RANDOM_INDEX:
+        shipment = LAST_RANDOM_INDEX.get(shipment_id)
+    else:
+        shipments = load_json(SHIPMENTS_FILE)
+        shipment = next((s for s in shipments if s['shipment_id'] == shipment_id), None)
+
     if not shipment:
         return jsonify({"error": "Shipment not found"}), 404
 
@@ -644,7 +687,7 @@ def approve():
             origin = s['origin']; destination = s['destination']
             weight_kg = s['weight_kg']
             distance_km = get_distance(origin, destination)
-            s['distance_km'] = distance_km  # NEW
+            s['distance_km'] = distance_km
 
             if chosen_carrier:
                 s['carrier'] = chosen_carrier
@@ -653,7 +696,7 @@ def approve():
                 s['current_cost_usd'] = s.get('cost_usd', calc_cost(distance_km, cur_carrier['base_cost_per_km']))
                 emi_val, emi_det = calc_emission_with_provenance(weight_kg, distance_km, mode=cur_carrier['mode'])
                 s['current_emission_kg_co2e'] = emi_val
-                s['current_emission_details'] = emi_det  # NEW
+                s['current_emission_details'] = emi_det
             s['status'] = 'APPROVED'
             s['approver_comments'] = comments
             updated = True
@@ -684,14 +727,14 @@ def reject():
             origin = s['origin']; destination = s['destination']
             weight_kg = s['weight_kg']
             distance_km = get_distance(origin, destination)
-            s['distance_km'] = distance_km  # NEW
+            s['distance_km'] = distance_km
 
             cur_carrier = carrier_lookup(s.get('carrier'))
             if cur_carrier:
                 s['current_cost_usd'] = s.get('cost_usd', calc_cost(distance_km, cur_carrier['base_cost_per_km']))
                 emi_val, emi_det = calc_emission_with_provenance(weight_kg, distance_km, mode=cur_carrier['mode'])
                 s['current_emission_kg_co2e'] = emi_val
-                s['current_emission_details'] = emi_det  # NEW
+                s['current_emission_details'] = emi_det
 
             s['status'] = 'REJECTED'
             s['approver_comments'] = comments
@@ -737,15 +780,15 @@ def dashboard_metrics():
             'status': s.get('status', 'CREATED'),
             'original_carrier': s.get('original_carrier'),
             'current_carrier': s.get('carrier'),
-            'distance_km': s.get('distance_km'),  # NEW
+            'distance_km': s.get('distance_km'),
             'original_emission_kg_co2e': s.get('original_emission_kg_co2e'),
             'current_emission_kg_co2e': s.get('current_emission_kg_co2e'),
             'original_cost_usd': s.get('original_cost_usd'),
             'current_cost_usd': s.get('current_cost_usd'),
             'emission_delta': round((s.get('current_emission_kg_co2e', 0) - s.get('original_emission_kg_co2e', 0)), 2),
             'cost_delta': round((s.get('current_cost_usd', 0) - s.get('original_cost_usd', 0)), 2),
-            'current_emission_details': s.get('current_emission_details'),     # NEW
-            'original_emission_details': s.get('original_emission_details')    # NEW
+            'current_emission_details': s.get('current_emission_details'),
+            'original_emission_details': s.get('original_emission_details')
         })
 
     return jsonify({
